@@ -1,500 +1,983 @@
-"""
-╔══════════════════════════════════════════════════════════════╗
-║   🎓  INTELLIGENT CAMPUS NAVIGATION AI AGENT  🎓            ║
-║   Project 01 — Graph Search & Heuristic Algorithms          ║
-╚══════════════════════════════════════════════════════════════╝
-"""
+# ============================================================
+# Intelligent Campus Navigation Assistant
+# Colab Console Code
+# Covers CO1, CO2, CO3, CO4, CO5, CO6
+# ============================================================
 
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Callable, Set, Any
+from collections import deque, defaultdict
 import heapq
-import math
 import time
-from collections import deque
+import tracemalloc
+import math
+import random
 
-# ─────────────────────────────────────────────
-#  🎨  COLORFUL TERMINAL COLORS
-# ─────────────────────────────────────────────
-class C:
-    RESET  = "\033[0m"
-    BOLD   = "\033[1m"
-    RED    = "\033[91m"
-    GREEN  = "\033[92m"
-    YELLOW = "\033[93m"
-    BLUE   = "\033[94m"
-    MAGENTA= "\033[95m"
-    CYAN   = "\033[96m"
-    WHITE  = "\033[97m"
-    ORANGE = "\033[38;5;208m"
-    PURPLE = "\033[38;5;135m"
-    LIME   = "\033[38;5;118m"
-    PINK   = "\033[38;5;213m"
+# ============================================================
+# CO1: Agent Model, PEAS, Environment, Problem Formulation
+# ============================================================
 
-def color(text, *codes):
-    return "".join(codes) + str(text) + C.RESET
+print("\n================ CO1: AGENT MODEL =================")
+
+PEAS = {
+    "Performance": [
+        "Shortest route",
+        "Minimum travel time",
+        "Accessible path if required",
+        "Avoid crowded/blocked paths",
+        "Explainable route"
+    ],
+    "Environment": [
+        "University campus",
+        "Buildings",
+        "Walkways",
+        "Stairs",
+        "Ramps",
+        "Crowded paths",
+        "Blocked paths"
+    ],
+    "Actuators": [
+        "Display route",
+        "Recommend next step",
+        "Warn about constraints"
+    ],
+    "Sensors": [
+        "Campus map",
+        "User location",
+        "Crowd level",
+        "Accessibility requirement",
+        "Time constraint"
+    ]
+}
+
+for k, v in PEAS.items():
+    print(f"{k}: {v}")
+
+ENVIRONMENT_TYPES = {
+    "Observable": "Partially observable because crowd/block status may be uncertain",
+    "Deterministic": "Mostly deterministic, but travel time can vary",
+    "Sequential": "Each movement affects next state",
+    "Dynamic": "Crowds and blockages can change",
+    "Discrete": "Locations and paths represented as graph nodes and edges",
+    "Multi-agent": "Other students also affect congestion"
+}
+
+print("\nEnvironment Types:")
+for k, v in ENVIRONMENT_TYPES.items():
+    print(f"{k}: {v}")
 
 
-# ─────────────────────────────────────────────
-#  🏛️  CAMPUS GRAPH DEFINITION
-# ─────────────────────────────────────────────
+# ============================================================
+# Knowledge Representation: Graphs, Rules, Constraints
+# ============================================================
+
+@dataclass(frozen=True)
+class CampusState:
+    location: str
+    time_elapsed: float = 0.0
+
+
+@dataclass
+class Edge:
+    target: str
+    distance: float
+    time: float
+    accessible: bool = True
+    crowded: bool = False
+    blocked: bool = False
+
+
+@dataclass
+class SearchResult:
+    path: List[str]
+    cost: float
+    expanded: int
+    runtime: float
+    peak_memory_kb: float
+    trace: List[str] = field(default_factory=list)
+
+
 class CampusGraph:
-    """
-    University campus modelled as a weighted undirected graph.
+    def __init__(self):
+        self.graph: Dict[str, List[Edge]] = defaultdict(list)
+        self.coords: Dict[str, Tuple[float, float]] = {}
 
-    State Representation:
-        - Each node = campus location (integer ID)
-        - Each edge = walking path with cost (distance in units)
-        - Node attributes: coordinates (x, y), category, accessibility
+    def add_location(self, name: str, x: float, y: float):
+        self.coords[name] = (x, y)
 
-    Cost Model:
-        - Base cost: edge weight (walking distance)
-        - Accessibility penalty: +2 if wheelchair route restricted
-        - Time estimate: cost * 2 minutes
-    """
+    def add_path(
+        self,
+        a: str,
+        b: str,
+        distance: float,
+        time: float,
+        accessible: bool = True,
+        crowded: bool = False,
+        blocked: bool = False
+    ):
+        self.graph[a].append(Edge(b, distance, time, accessible, crowded, blocked))
+        self.graph[b].append(Edge(a, distance, time, accessible, crowded, blocked))
 
-    LOCATIONS = {
-        0:  {"name": "Main Gate",       "x": 60,  "y": 100, "type": "entry",      "accessible": True},
-        1:  {"name": "Library",         "x": 200, "y": 40,  "type": "academic",   "accessible": True},
-        2:  {"name": "CS Department",   "x": 300, "y": 80,  "type": "academic",   "accessible": True},
-        3:  {"name": "Cafeteria",       "x": 200, "y": 140, "type": "amenity",    "accessible": True},
-        4:  {"name": "Sports Complex",  "x": 450, "y": 160, "type": "recreation", "accessible": False},
-        5:  {"name": "Hostel A",        "x": 550, "y": 40,  "type": "housing",    "accessible": True},
-        6:  {"name": "Admin Block",     "x": 120, "y": 160, "type": "academic",   "accessible": True},
-        7:  {"name": "Labs",            "x": 380, "y": 40,  "type": "academic",   "accessible": True},
-        8:  {"name": "Auditorium",      "x": 500, "y": 90,  "type": "amenity",    "accessible": True},
-        9:  {"name": "Parking Lot",     "x": 600, "y": 150, "type": "entry",      "accessible": True},
-        10: {"name": "Medical Center",  "x": 580, "y": 100, "type": "amenity",    "accessible": True},
-        11: {"name": "Garden",          "x": 350, "y": 180, "type": "recreation", "accessible": True},
+    def neighbors(self, node: str) -> List[Edge]:
+        return self.graph[node]
+
+    def heuristic_distance(self, a: str, b: str) -> float:
+        ax, ay = self.coords[a]
+        bx, by = self.coords[b]
+        return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+
+
+def build_sample_campus() -> CampusGraph:
+    campus = CampusGraph()
+
+    locations = {
+        "Gate": (0, 0),
+        "Library": (2, 2),
+        "Cafeteria": (4, 1),
+        "Admin": (1, 5),
+        "Lab": (5, 5),
+        "Auditorium": (7, 3),
+        "Hostel": (8, 0),
+        "Sports": (6, -2),
+        "Medical": (3, -2)
     }
 
-    # (from, to, weight)
-    EDGES = [
-        (0,  1,  4),
-        (0,  6,  5),
-        (0,  9,  8),
-        (1,  2,  3),
-        (1,  3,  4),
-        (1,  6,  3),
-        (2,  7,  2),
-        (2,  3,  4),
-        (3,  4,  6),
-        (3,  11, 3),
-        (4,  11, 4),
-        (4,  5,  7),
-        (5,  8,  5),
-        (6,  10, 4),
-        (7,  8,  3),
-        (8,  9,  5),
-        (9,  10, 2),
-        (10, 11, 6),
-    ]
+    for name, (x, y) in locations.items():
+        campus.add_location(name, x, y)
 
-    def __init__(self, accessibility_mode: str = "normal"):
-        """
-        Build adjacency list.
+    campus.add_path("Gate", "Library", 3, 5, accessible=True)
+    campus.add_path("Gate", "Medical", 4, 6, accessible=True)
+    campus.add_path("Library", "Admin", 4, 7, accessible=True)
+    campus.add_path("Library", "Cafeteria", 3, 5, accessible=True, crowded=True)
+    campus.add_path("Cafeteria", "Lab", 5, 8, accessible=False)
+    campus.add_path("Admin", "Lab", 4, 6, accessible=True)
+    campus.add_path("Lab", "Auditorium", 3, 4, accessible=True)
+    campus.add_path("Auditorium", "Hostel", 4, 6, accessible=True)
+    campus.add_path("Medical", "Sports", 4, 5, accessible=True)
+    campus.add_path("Sports", "Hostel", 3, 4, accessible=True)
+    campus.add_path("Cafeteria", "Auditorium", 4, 7, accessible=True)
+    campus.add_path("Library", "Medical", 3, 4, accessible=True)
 
-        Args:
-            accessibility_mode: 'normal' | 'wheelchair' | 'elevator'
-        """
-        self.accessibility_mode = accessibility_mode
-        self.graph: dict[int, list[tuple[int, float]]] = {i: [] for i in self.LOCATIONS}
-        self._build_graph()
-
-    def _build_graph(self):
-        for a, b, w in self.EDGES:
-            cost = self._edge_cost(a, b, w)
-            if cost is not None:
-                self.graph[a].append((b, cost))
-                self.graph[b].append((a, cost))
-
-    def _edge_cost(self, a: int, b: int, w: float) -> float | None:
-        """Apply accessibility constraints to edge cost."""
-        if self.accessibility_mode == "wheelchair":
-            if not self.LOCATIONS[a]["accessible"] or not self.LOCATIONS[b]["accessible"]:
-                return None           # blocked
-            return w + 1             # slightly longer accessible route
-        return float(w)
-
-    def heuristic(self, node: int, goal: int) -> float:
-        """Euclidean distance heuristic (admissible)."""
-        a = self.LOCATIONS[node]
-        g = self.LOCATIONS[goal]
-        return math.sqrt((a["x"] - g["x"]) ** 2 + (a["y"] - g["y"]) ** 2) / 20
-
-    def node_name(self, n: int) -> str:
-        return self.LOCATIONS[n]["name"]
-
-    def node_type(self, n: int) -> str:
-        return self.LOCATIONS[n]["type"]
-
-    def path_cost(self, path: list[int]) -> float:
-        total = 0.0
-        for i in range(len(path) - 1):
-            neighbors = dict(self.graph[path[i]])
-            total += neighbors.get(path[i + 1], 0)
-        return round(total, 2)
+    return campus
 
 
-# ─────────────────────────────────────────────
-#  🤖  AI AGENT — SEARCH ALGORITHMS
-# ─────────────────────────────────────────────
-class NavigationAgent:
-    """
-    AI Agent that uses various search algorithms to find
-    optimal routes on the campus graph.
+campus = build_sample_campus()
 
-    Algorithms supported:
-        1. A* Search        — optimal with admissible heuristic
-        2. Dijkstra's       — optimal, no heuristic
-        3. BFS              — optimal for unweighted (fewest hops)
-        4. DFS              — not optimal, explores deeply
-        5. Greedy Best-First— fast but not guaranteed optimal
-        6. UCS              — Uniform Cost Search (Dijkstra variant)
-    """
+RULES = [
+    "If accessibility_required=True, avoid inaccessible edges",
+    "If edge is blocked, do not use it",
+    "If user is late, optimize time more than distance",
+    "If path is crowded, add congestion penalty",
+    "If medical emergency, prefer route through Medical if reasonable"
+]
 
+print("\nKnowledge Representation Rules:")
+for rule in RULES:
+    print("-", rule)
+
+
+# ============================================================
+# Cost Model
+# ============================================================
+
+def route_cost(
+    edge: Edge,
+    optimize: str = "distance",
+    accessibility_required: bool = False,
+    avoid_crowds: bool = True
+) -> float:
+    if edge.blocked:
+        return float("inf")
+
+    if accessibility_required and not edge.accessible:
+        return float("inf")
+
+    if optimize == "distance":
+        base = edge.distance
+    elif optimize == "time":
+        base = edge.time
+    else:
+        base = 0.5 * edge.distance + 0.5 * edge.time
+
+    if avoid_crowds and edge.crowded:
+        base += 4
+
+    return base
+
+
+# ============================================================
+# Profiling Decorator
+# ============================================================
+
+def profile_search(func):
+    def wrapper(*args, **kwargs):
+        tracemalloc.start()
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        runtime = time.perf_counter() - start
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        result.runtime = runtime
+        result.peak_memory_kb = peak / 1024
+        return result
+    return wrapper
+
+
+def reconstruct_path(parent: Dict[str, Optional[str]], goal: str) -> List[str]:
+    path = []
+    node = goal
+    while node is not None:
+        path.append(node)
+        node = parent[node]
+    return path[::-1]
+
+
+# ============================================================
+# CO2: BFS, DFS, UCS, Greedy, A*, IDA* Concept
+# ============================================================
+
+@profile_search
+def bfs(campus: CampusGraph, start: str, goal: str) -> SearchResult:
+    queue = deque([start])
+    parent = {start: None}
+    expanded = 0
+    trace = []
+
+    while queue:
+        node = queue.popleft()
+        expanded += 1
+        trace.append(f"BFS expands {node}")
+
+        if node == goal:
+            return SearchResult(reconstruct_path(parent, goal), len(reconstruct_path(parent, goal)) - 1, expanded, 0, 0, trace)
+
+        for edge in campus.neighbors(node):
+            if edge.target not in parent and not edge.blocked:
+                parent[edge.target] = node
+                queue.append(edge.target)
+
+    return SearchResult([], float("inf"), expanded, 0, 0, trace)
+
+
+@profile_search
+def dfs(campus: CampusGraph, start: str, goal: str) -> SearchResult:
+    stack = [start]
+    parent = {start: None}
+    expanded = 0
+    trace = []
+
+    while stack:
+        node = stack.pop()
+        expanded += 1
+        trace.append(f"DFS expands {node}")
+
+        if node == goal:
+            return SearchResult(reconstruct_path(parent, goal), len(reconstruct_path(parent, goal)) - 1, expanded, 0, 0, trace)
+
+        for edge in campus.neighbors(node):
+            if edge.target not in parent and not edge.blocked:
+                parent[edge.target] = node
+                stack.append(edge.target)
+
+    return SearchResult([], float("inf"), expanded, 0, 0, trace)
+
+
+@profile_search
+def ucs(
+    campus: CampusGraph,
+    start: str,
+    goal: str,
+    optimize: str = "distance",
+    accessibility_required: bool = False
+) -> SearchResult:
+    pq = [(0, 0, start)]
+    parent = {start: None}
+    best_cost = {start: 0}
+    expanded = 0
+    counter = 0
+    trace = []
+
+    while pq:
+        cost, _, node = heapq.heappop(pq)
+
+        if cost > best_cost[node]:
+            continue
+
+        expanded += 1
+        trace.append(f"UCS expands {node} with cost {cost:.2f}")
+
+        if node == goal:
+            return SearchResult(reconstruct_path(parent, goal), cost, expanded, 0, 0, trace)
+
+        for edge in campus.neighbors(node):
+            step = route_cost(edge, optimize, accessibility_required)
+            new_cost = cost + step
+
+            if new_cost < best_cost.get(edge.target, float("inf")):
+                best_cost[edge.target] = new_cost
+                parent[edge.target] = node
+                counter += 1
+                heapq.heappush(pq, (new_cost, counter, edge.target))
+
+    return SearchResult([], float("inf"), expanded, 0, 0, trace)
+
+
+@profile_search
+def greedy_best_first(
+    campus: CampusGraph,
+    start: str,
+    goal: str,
+    accessibility_required: bool = False
+) -> SearchResult:
+    pq = [(campus.heuristic_distance(start, goal), 0, start)]
+    parent = {start: None}
+    visited = set()
+    expanded = 0
+    counter = 0
+    trace = []
+
+    while pq:
+        h, _, node = heapq.heappop(pq)
+
+        if node in visited:
+            continue
+
+        visited.add(node)
+        expanded += 1
+        trace.append(f"Greedy expands {node}, h={h:.2f}")
+
+        if node == goal:
+            path = reconstruct_path(parent, goal)
+            return SearchResult(path, len(path) - 1, expanded, 0, 0, trace)
+
+        for edge in campus.neighbors(node):
+            if edge.target not in visited:
+                if route_cost(edge, "distance", accessibility_required) < float("inf"):
+                    parent[edge.target] = node
+                    counter += 1
+                    heapq.heappush(pq, (campus.heuristic_distance(edge.target, goal), counter, edge.target))
+
+    return SearchResult([], float("inf"), expanded, 0, 0, trace)
+
+
+@profile_search
+def astar(
+    campus: CampusGraph,
+    start: str,
+    goal: str,
+    optimize: str = "distance",
+    accessibility_required: bool = False
+) -> SearchResult:
+    pq = [(campus.heuristic_distance(start, goal), 0, 0, start)]
+    parent = {start: None}
+    g_score = {start: 0}
+    expanded = 0
+    counter = 0
+    trace = []
+
+    while pq:
+        f, _, g, node = heapq.heappop(pq)
+
+        if g > g_score[node]:
+            continue
+
+        expanded += 1
+        trace.append(f"A* expands {node}: g={g:.2f}, h={campus.heuristic_distance(node, goal):.2f}, f={f:.2f}")
+
+        if node == goal:
+            return SearchResult(reconstruct_path(parent, goal), g, expanded, 0, 0, trace)
+
+        for edge in campus.neighbors(node):
+            step = route_cost(edge, optimize, accessibility_required)
+            tentative_g = g + step
+
+            if tentative_g < g_score.get(edge.target, float("inf")):
+                parent[edge.target] = node
+                g_score[edge.target] = tentative_g
+                h = campus.heuristic_distance(edge.target, goal)
+                counter += 1
+                heapq.heappush(pq, (tentative_g + h, counter, tentative_g, edge.target))
+
+    return SearchResult([], float("inf"), expanded, 0, 0, trace)
+
+
+def ida_star_concept():
+    print("\nIDA* Concept:")
+    print("IDA* performs A* search using depth-first memory behavior.")
+    print("It repeatedly increases an f-cost threshold.")
+    print("Useful when memory is limited, but may re-expand nodes.")
+
+
+def print_result(name: str, result: SearchResult, show_trace: bool = True):
+    print(f"\n{name}")
+    print("Path:", " -> ".join(result.path) if result.path else "No path")
+    print("Cost:", round(result.cost, 2))
+    print("Expanded nodes:", result.expanded)
+    print("Runtime:", round(result.runtime, 6), "seconds")
+    print("Peak memory:", round(result.peak_memory_kb, 2), "KB")
+    if show_trace:
+        print("Trace:")
+        for line in result.trace[:8]:
+            print(" ", line)
+        if len(result.trace) > 8:
+            print("  ...")
+
+
+print("\n================ CO2: SEARCH ALGORITHMS =================")
+
+start, goal = "Gate", "Hostel"
+
+results = {
+    "BFS": bfs(campus, start, goal),
+    "DFS": dfs(campus, start, goal),
+    "UCS Distance": ucs(campus, start, goal, optimize="distance"),
+    "UCS Time": ucs(campus, start, goal, optimize="time"),
+    "Greedy": greedy_best_first(campus, start, goal),
+    "A* Distance": astar(campus, start, goal, optimize="distance"),
+    "A* Accessible": astar(campus, start, goal, optimize="distance", accessibility_required=True)
+}
+
+for name, result in results.items():
+    print_result(name, result)
+
+ida_star_concept()
+
+print("\nHeuristic Evaluation:")
+print("The straight-line distance heuristic is usually admissible if actual walking distance is never shorter than straight-line distance.")
+print("It is consistent if h(n) <= cost(n, n') + h(n') for every edge.")
+
+
+# ============================================================
+# Testing Small Algorithm Units
+# ============================================================
+
+print("\n================ UNIT TESTS =================")
+
+def test_heuristic_zero():
+    assert campus.heuristic_distance("Gate", "Gate") == 0
+
+def test_bfs_finds_path():
+    assert bfs(campus, "Gate", "Hostel").path[0] == "Gate"
+
+def test_ucs_valid_goal():
+    assert ucs(campus, "Gate", "Hostel").path[-1] == "Hostel"
+
+def test_accessibility_cost():
+    inaccessible_edge = Edge("X", 1, 1, accessible=False)
+    assert route_cost(inaccessible_edge, accessibility_required=True) == float("inf")
+
+tests = [
+    test_heuristic_zero,
+    test_bfs_finds_path,
+    test_ucs_valid_goal,
+    test_accessibility_cost
+]
+
+for t in tests:
+    t()
+    print(t.__name__, "passed")
+
+
+# ============================================================
+# CO3: CSP Modeling, Backtracking, MRV, Degree, LCV, Forward Checking
+# Scheduling / Timetabling Example
+# ============================================================
+
+print("\n================ CO3: CSP SCHEDULING =================")
+
+courses = ["AI", "DBMS", "Networks", "Math"]
+rooms = ["R1", "R2"]
+slots = ["9AM", "10AM", "11AM"]
+
+variables = courses
+domains = {course: [(room, slot) for room in rooms for slot in slots] for course in courses}
+
+teachers = {
+    "AI": "T1",
+    "DBMS": "T2",
+    "Networks": "T1",
+    "Math": "T3"
+}
+
+def constraint_ok(course1, value1, course2, value2) -> Tuple[bool, str]:
+    room1, slot1 = value1
+    room2, slot2 = value2
+
+    if slot1 == slot2 and room1 == room2:
+        return False, f"{course1} and {course2} conflict: same room {room1} at {slot1}"
+
+    if slot1 == slot2 and teachers[course1] == teachers[course2]:
+        return False, f"{course1} and {course2} conflict: teacher {teachers[course1]} at {slot1}"
+
+    return True, "OK"
+
+
+def is_consistent(var, value, assignment):
+    for other, other_value in assignment.items():
+        ok, reason = constraint_ok(var, value, other, other_value)
+        if not ok:
+            return False, reason
+    return True, "OK"
+
+
+def mrv_select_unassigned(assignment, domains):
+    unassigned = [v for v in variables if v not in assignment]
+    return min(unassigned, key=lambda var: len(domains[var]))
+
+
+def lcv_order_values(var, domains, assignment):
+    def conflicts_count(value):
+        count = 0
+        for other in variables:
+            if other != var and other not in assignment:
+                for other_value in domains[other]:
+                    ok, _ = constraint_ok(var, value, other, other_value)
+                    if not ok:
+                        count += 1
+        return count
+
+    return sorted(domains[var], key=conflicts_count)
+
+
+def forward_check(var, value, domains, assignment):
+    new_domains = {v: list(vals) for v, vals in domains.items()}
+
+    for other in variables:
+        if other != var and other not in assignment:
+            filtered = []
+            for other_value in new_domains[other]:
+                ok, _ = constraint_ok(var, value, other, other_value)
+                if ok:
+                    filtered.append(other_value)
+            new_domains[other] = filtered
+
+            if not filtered:
+                return None
+
+    return new_domains
+
+
+def backtracking_csp(assignment, domains, trace):
+    if len(assignment) == len(variables):
+        return assignment
+
+    var = mrv_select_unassigned(assignment, domains)
+    trace.append(f"Select {var} using MRV")
+
+    for value in lcv_order_values(var, domains, assignment):
+        ok, reason = is_consistent(var, value, assignment)
+
+        if ok:
+            trace.append(f"Try {var}={value}")
+            assignment[var] = value
+            new_domains = forward_check(var, value, domains, assignment)
+
+            if new_domains is not None:
+                result = backtracking_csp(assignment, new_domains, trace)
+                if result:
+                    return result
+
+            trace.append(f"Backtrack from {var}={value}")
+            del assignment[var]
+        else:
+            trace.append(f"Reject {var}={value}: {reason}")
+
+    return None
+
+
+csp_trace = []
+schedule = backtracking_csp({}, domains, csp_trace)
+
+print("Schedule Solution:")
+print(schedule)
+
+print("\nCSP Explanation Trace:")
+for line in csp_trace[:15]:
+    print(" ", line)
+
+print("\nArc Consistency Intuition:")
+print("Arc consistency removes domain values that have no compatible value in a neighboring variable.")
+
+print("\nSAT Intuition:")
+print("A timetable can be encoded as Boolean variables such as AI_R1_9AM = True/False.")
+
+
+# Local Search for CSP: Min-Conflicts
+
+def count_conflicts(assignment):
+    conflicts = 0
+    conflict_reasons = []
+
+    for i in range(len(courses)):
+        for j in range(i + 1, len(courses)):
+            c1, c2 = courses[i], courses[j]
+            ok, reason = constraint_ok(c1, assignment[c1], c2, assignment[c2])
+            if not ok:
+                conflicts += 1
+                conflict_reasons.append(reason)
+
+    return conflicts, conflict_reasons
+
+
+def min_conflicts(max_steps=100):
+    assignment = {c: random.choice(domains[c]) for c in courses}
+
+    for step in range(max_steps):
+        conflicts, reasons = count_conflicts(assignment)
+        if conflicts == 0:
+            return assignment, step, []
+
+        conflicted_vars = []
+        for c in courses:
+            temp = assignment.copy()
+            local_conflicts = 0
+            for other in courses:
+                if other != c:
+                    ok, _ = constraint_ok(c, assignment[c], other, assignment[other])
+                    if not ok:
+                        local_conflicts += 1
+            if local_conflicts > 0:
+                conflicted_vars.append(c)
+
+        var = random.choice(conflicted_vars)
+
+        best_value = min(
+            domains[var],
+            key=lambda val: count_conflicts({**assignment, var: val})[0]
+        )
+        assignment[var] = best_value
+
+    return assignment, max_steps, count_conflicts(assignment)[1]
+
+
+mc_solution, mc_steps, mc_failures = min_conflicts()
+print("\nMin-Conflicts Solution:")
+print(mc_solution)
+print("Steps:", mc_steps)
+print("Failures:", mc_failures)
+
+
+# ============================================================
+# CO4: Utility, Minimax, Alpha-Beta, Evaluation, Decision Logic
+# ============================================================
+
+print("\n================ CO4: DECISION MAKING =================")
+
+def route_utility(
+    path_cost: float,
+    expanded: int,
+    accessible: bool,
+    crowd_risk: float
+) -> float:
+    utility = 100
+    utility -= path_cost * 5
+    utility -= expanded * 0.5
+    utility -= crowd_risk * 20
+
+    if accessible:
+        utility += 10
+
+    return utility
+
+
+candidate_routes = [
+    ("A* Distance", results["A* Distance"]),
+    ("UCS Time", results["UCS Time"]),
+    ("A* Accessible", results["A* Accessible"])
+]
+
+print("Route Utility Scores:")
+best_policy = None
+best_score = -float("inf")
+
+for name, result in candidate_routes:
+    accessible = name == "A* Accessible"
+    crowd_risk = 0.2 if "Library" in result.path else 0.4
+    score = route_utility(result.cost, result.expanded, accessible, crowd_risk)
+    print(name, "utility =", round(score, 2))
+
+    if score > best_score:
+        best_score = score
+        best_policy = name
+
+print("Selected Policy:", best_policy)
+
+
+# Multi-agent reasoning example:
+# Student wants shortest route, crowd wants popular cafeteria route.
+
+game_tree = {
+    "Start": ["Route_Library", "Route_Medical"],
+    "Route_Library": [70, 40],
+    "Route_Medical": [60, 55]
+}
+
+def minimax(node, maximizing=True):
+    if isinstance(node, int):
+        return node
+
+    children = game_tree[node]
+
+    if maximizing:
+        return max(minimax(child, False) for child in children)
+    else:
+        return min(minimax(child, True) for child in children)
+
+
+def alpha_beta(node, alpha=-float("inf"), beta=float("inf"), maximizing=True):
+    if isinstance(node, int):
+        return node
+
+    children = game_tree[node]
+
+    if maximizing:
+        value = -float("inf")
+        for child in children:
+            value = max(value, alpha_beta(child, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float("inf")
+        for child in children:
+            value = min(value, alpha_beta(child, alpha, beta, True))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+
+print("\nMinimax Value:", minimax("Start"))
+print("Alpha-Beta Value:", alpha_beta("Start"))
+print("Iterative Deepening Concept: run depth-limited search repeatedly with increasing depth.")
+print("Expectimax Concept: replace opponent min nodes with expected-value chance nodes.")
+print("Bounded Rationality: choose a good enough route under time and memory limits.")
+
+
+# ============================================================
+# CO5: Probability, Bayes Rule, Bayesian Network, Inference
+# ============================================================
+
+print("\n================ CO5: PROBABILISTIC REASONING =================")
+
+def bayes_rule(prior_blocked, p_sensor_given_blocked, p_sensor_given_not_blocked):
+    numerator = p_sensor_given_blocked * prior_blocked
+    denominator = numerator + p_sensor_given_not_blocked * (1 - prior_blocked)
+    return numerator / denominator
+
+
+prior_blocked = 0.20
+p_alert_given_blocked = 0.90
+p_alert_given_not_blocked = 0.15
+
+posterior = bayes_rule(prior_blocked, p_alert_given_blocked, p_alert_given_not_blocked)
+
+print("Bayes Rule Example:")
+print("P(Blocked | Sensor Alert) =", round(posterior, 3))
+
+
+# Bayesian network style CPT:
+# Rain -> Crowd
+# Event -> Crowd
+# Crowd -> TravelDelay
+
+bayes_net = {
+    "Rain": {"P(True)": 0.3},
+    "Event": {"P(True)": 0.4},
+    "Crowd": {
+        (True, True): 0.9,
+        (True, False): 0.7,
+        (False, True): 0.8,
+        (False, False): 0.2
+    },
+    "Delay": {
+        True: 0.85,
+        False: 0.25
+    }
+}
+
+def variable_elimination_delay():
+    total = 0
+
+    for rain in [True, False]:
+        for event in [True, False]:
+            p_rain = bayes_net["Rain"]["P(True)"] if rain else 1 - bayes_net["Rain"]["P(True)"]
+            p_event = bayes_net["Event"]["P(True)"] if event else 1 - bayes_net["Event"]["P(True)"]
+
+            p_crowd_true = bayes_net["Crowd"][(rain, event)]
+            p_crowd_false = 1 - p_crowd_true
+
+            p_delay = (
+                bayes_net["Delay"][True] * p_crowd_true +
+                bayes_net["Delay"][False] * p_crowd_false
+            )
+
+            total += p_rain * p_event * p_delay
+
+    return total
+
+
+print("\nVariable Elimination Worked Example:")
+print("P(Delay=True) =", round(variable_elimination_delay(), 3))
+
+print("\nBelief Propagation Intuition:")
+print("Nodes pass probability messages to update beliefs about crowd and delay.")
+
+print("\nSampling Inference Intuition:")
+print("Rejection sampling keeps samples matching evidence.")
+print("Likelihood weighting weights samples by evidence likelihood.")
+
+
+# Markov Chain / HMM Tracking
+
+locations = ["Gate", "Library", "Cafeteria"]
+transition = {
+    "Gate": {"Gate": 0.1, "Library": 0.8, "Cafeteria": 0.1},
+    "Library": {"Gate": 0.2, "Library": 0.2, "Cafeteria": 0.6},
+    "Cafeteria": {"Gate": 0.1, "Library": 0.3, "Cafeteria": 0.6}
+}
+
+sensor_model = {
+    "Gate": {"near_gate": 0.8, "near_library": 0.1, "near_cafe": 0.1},
+    "Library": {"near_gate": 0.1, "near_library": 0.8, "near_cafe": 0.1},
+    "Cafeteria": {"near_gate": 0.1, "near_library": 0.2, "near_cafe": 0.7}
+}
+
+def hmm_update(belief, observation):
+    predicted = {loc: 0 for loc in locations}
+
+    for old in locations:
+        for new in locations:
+            predicted[new] += belief[old] * transition[old][new]
+
+    updated = {
+        loc: predicted[loc] * sensor_model[loc][observation]
+        for loc in locations
+    }
+
+    norm = sum(updated.values())
+
+    return {loc: updated[loc] / norm for loc in locations}
+
+
+belief = {"Gate": 1 / 3, "Library": 1 / 3, "Cafeteria": 1 / 3}
+observations = ["near_gate", "near_library", "near_cafe"]
+
+print("\nHMM Tracking:")
+for obs in observations:
+    belief = hmm_update(belief, obs)
+    print("After observation", obs, "belief =", {k: round(v, 3) for k, v in belief.items()})
+
+
+def expected_utility(success_prob, utility_success, utility_failure):
+    return success_prob * utility_success + (1 - success_prob) * utility_failure
+
+
+print("\nUncertainty-Aware Decision:")
+safe_route_eu = expected_utility(0.9, 80, 20)
+fast_route_eu = expected_utility(0.6, 100, 10)
+print("Safe route expected utility:", safe_route_eu)
+print("Fast route expected utility:", fast_route_eu)
+print("Choose:", "Safe route" if safe_route_eu > fast_route_eu else "Fast route")
+
+
+# ============================================================
+# CO6: Hybrid Architecture
+# Search + CSP + Probabilistic + Decision Logic
+# ============================================================
+
+print("\n================ CO6: HYBRID CAMPUS AI AGENT =================")
+
+@dataclass
+class UserRequest:
+    start: str
+    goal: str
+    optimize: str = "distance"
+    accessibility_required: bool = False
+    deadline_minutes: Optional[float] = None
+
+
+class IntelligentCampusAgent:
     def __init__(self, campus: CampusGraph):
         self.campus = campus
-        self.stats: dict = {}
 
-    # ── 1. A* Search ──────────────────────────────────────────
-    def astar(self, start: int, goal: int) -> list[int] | None:
-        """
-        A* Search: f(n) = g(n) + h(n)
-        g(n) = actual cost from start
-        h(n) = heuristic estimate to goal
-        """
-        open_heap = [(0 + self.campus.heuristic(start, goal), 0.0, start, [start])]
-        visited = set()
-        nodes_expanded = 0
+    def explain_limitations(self):
+        return [
+            "Heuristic bias: straight-line distance may ignore stairs or construction.",
+            "Uncertainty miscalibration: crowd estimates may be wrong.",
+            "Ethical issue: accessibility preferences must be respected.",
+            "Privacy issue: location tracking should use consent."
+        ]
 
-        while open_heap:
-            f, g, current, path = heapq.heappop(open_heap)
-            if current in visited:
-                continue
-            visited.add(current)
-            nodes_expanded += 1
+    def decide(self, request: UserRequest):
+        trace = []
 
-            if current == goal:
-                self.stats = {"nodes_expanded": nodes_expanded, "algo": "A* Search"}
-                return path
+        trace.append("Step 1: Apply rules and constraints.")
+        if request.accessibility_required:
+            trace.append("Accessibility is required, inaccessible edges are forbidden.")
 
-            for neighbor, cost in self.campus.graph[current]:
-                if neighbor not in visited:
-                    new_g = g + cost
-                    new_f = new_g + self.campus.heuristic(neighbor, goal)
-                    heapq.heappush(open_heap, (new_f, new_g, neighbor, path + [neighbor]))
+        trace.append("Step 2: Run A* search.")
+        route = astar(
+            self.campus,
+            request.start,
+            request.goal,
+            optimize=request.optimize,
+            accessibility_required=request.accessibility_required
+        )
 
-        return None
+        trace.append("Step 3: Estimate uncertainty using Bayesian delay model.")
+        delay_probability = variable_elimination_delay()
+        trace.append(f"Estimated probability of delay: {delay_probability:.3f}")
 
-    # ── 2. Dijkstra's Algorithm ───────────────────────────────
-    def dijkstra(self, start: int, goal: int) -> list[int] | None:
-        """
-        Dijkstra's: explores by minimum cumulative cost.
-        Guaranteed to find shortest path in non-negative weighted graphs.
-        """
-        dist = {i: float("inf") for i in self.campus.LOCATIONS}
-        prev = {i: -1 for i in self.campus.LOCATIONS}
-        dist[start] = 0
-        heap = [(0.0, start)]
-        visited = set()
-        nodes_expanded = 0
+        trace.append("Step 4: Compute expected utility.")
+        success_prob = max(0.1, 1 - delay_probability)
+        eu = expected_utility(success_prob, 90 - route.cost * 3, 20)
 
-        while heap:
-            d, u = heapq.heappop(heap)
-            if u in visited:
-                continue
-            visited.add(u)
-            nodes_expanded += 1
+        trace.append(f"Expected utility of selected route: {eu:.2f}")
 
-            if u == goal:
-                break
+        if request.deadline_minutes is not None and route.cost > request.deadline_minutes:
+            trace.append("Warning: route may exceed deadline.")
 
-            for v, w in self.campus.graph[u]:
-                if dist[u] + w < dist[v]:
-                    dist[v] = dist[u] + w
-                    prev[v] = u
-                    heapq.heappush(heap, (dist[v], v))
+        trace.append("Step 5: Return explainable recommendation.")
 
-        # Reconstruct path
-        path, node = [], goal
-        while node != -1:
-            path.insert(0, node)
-            node = prev[node]
-
-        self.stats = {"nodes_expanded": nodes_expanded, "algo": "Dijkstra's"}
-        return path if path[0] == start else None
-
-    # ── 3. BFS ────────────────────────────────────────────────
-    def bfs(self, start: int, goal: int) -> list[int] | None:
-        """
-        Breadth-First Search: explores level by level.
-        Finds path with fewest edges (hops), not minimum cost.
-        """
-        queue = deque([(start, [start])])
-        visited = {start}
-        nodes_expanded = 0
-
-        while queue:
-            current, path = queue.popleft()
-            nodes_expanded += 1
-
-            if current == goal:
-                self.stats = {"nodes_expanded": nodes_expanded, "algo": "BFS"}
-                return path
-
-            for neighbor, _ in self.campus.graph[current]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, path + [neighbor]))
-
-        return None
-
-    # ── 4. DFS ────────────────────────────────────────────────
-    def dfs(self, start: int, goal: int) -> list[int] | None:
-        """
-        Depth-First Search: explores as deep as possible first.
-        Not guaranteed to find optimal path.
-        """
-        stack = [(start, [start])]
-        visited = set()
-        nodes_expanded = 0
-
-        while stack:
-            current, path = stack.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            nodes_expanded += 1
-
-            if current == goal:
-                self.stats = {"nodes_expanded": nodes_expanded, "algo": "DFS"}
-                return path
-
-            for neighbor, _ in self.campus.graph[current]:
-                if neighbor not in visited:
-                    stack.append((neighbor, path + [neighbor]))
-
-        return None
-
-    # ── 5. Greedy Best-First Search ───────────────────────────
-    def greedy_best_first(self, start: int, goal: int) -> list[int] | None:
-        """
-        Greedy Best-First: always expands node closest to goal by heuristic.
-        Fast but NOT guaranteed optimal.
-        """
-        heap = [(self.campus.heuristic(start, goal), start, [start])]
-        visited = set()
-        nodes_expanded = 0
-
-        while heap:
-            h, current, path = heapq.heappop(heap)
-            if current in visited:
-                continue
-            visited.add(current)
-            nodes_expanded += 1
-
-            if current == goal:
-                self.stats = {"nodes_expanded": nodes_expanded, "algo": "Greedy Best-First"}
-                return path
-
-            for neighbor, _ in self.campus.graph[current]:
-                if neighbor not in visited:
-                    heapq.heappush(heap, (self.campus.heuristic(neighbor, goal), neighbor, path + [neighbor]))
-
-        return None
-
-    # ── 6. Uniform Cost Search ────────────────────────────────
-    def ucs(self, start: int, goal: int) -> list[int] | None:
-        """
-        Uniform Cost Search: expands lowest cumulative cost node.
-        Equivalent to Dijkstra's; guaranteed optimal.
-        """
-        return self.dijkstra(start, goal)  # Same logic
-
-    def find_route(self, start: int, goal: int, algorithm: str = "astar") -> list[int] | None:
-        """Dispatch to the selected search algorithm."""
-        algos = {
-            "astar":   self.astar,
-            "dijkstra":self.dijkstra,
-            "bfs":     self.bfs,
-            "dfs":     self.dfs,
-            "greedy":  self.greedy_best_first,
-            "ucs":     self.ucs,
+        return {
+            "path": route.path,
+            "cost": route.cost,
+            "expanded": route.expanded,
+            "expected_utility": eu,
+            "trace": trace,
+            "limitations": self.explain_limitations()
         }
-        fn = algos.get(algorithm)
-        if fn is None:
-            raise ValueError(f"Unknown algorithm: {algorithm}")
-        return fn(start, goal)
 
 
-# ─────────────────────────────────────────────
-#  🖨️  COLORFUL OUTPUT PRINTER
-# ─────────────────────────────────────────────
-def print_header():
-    lines = [
-        color("╔══════════════════════════════════════════════════════════╗", C.CYAN, C.BOLD),
-        color("║   🎓  INTELLIGENT CAMPUS NAVIGATION AI AGENT  🎓        ║", C.CYAN, C.BOLD),
-        color("║   Graph Search · Heuristics · Optimal Routing           ║", C.CYAN),
-        color("╚══════════════════════════════════════════════════════════╝", C.CYAN, C.BOLD),
-    ]
-    for l in lines:
-        print(l)
-    print()
+agent = IntelligentCampusAgent(campus)
+
+request = UserRequest(
+    start="Gate",
+    goal="Hostel",
+    optimize="time",
+    accessibility_required=True,
+    deadline_minutes=15
+)
+
+recommendation = agent.decide(request)
+
+print("Recommended Path:")
+print(" -> ".join(recommendation["path"]))
+
+print("Cost:", round(recommendation["cost"], 2))
+print("Expanded:", recommendation["expanded"])
+print("Expected Utility:", round(recommendation["expected_utility"], 2))
+
+print("\nExplainable Reasoning Trace:")
+for line in recommendation["trace"]:
+    print("-", line)
+
+print("\nEthics and Limitations:")
+for item in recommendation["limitations"]:
+    print("-", item)
 
 
-TYPE_COLORS = {
-    "academic":   C.BLUE,
-    "amenity":    C.PINK,
-    "recreation": C.LIME,
-    "housing":    C.ORANGE,
-    "entry":      C.PURPLE,
-}
-
-ALGO_LABELS = {
-    "astar":    ("⭐", "A* Search",         "Heuristic + Cost"),
-    "dijkstra": ("🔵", "Dijkstra's",         "Shortest Path"),
-    "bfs":      ("🌊", "BFS",                "Fewest Hops"),
-    "dfs":      ("🌿", "DFS",                "Deep Explore"),
-    "greedy":   ("🎯", "Greedy Best-First",  "Heuristic Fast"),
-    "ucs":      ("⚖️",  "UCS",               "Uniform Cost"),
-}
 
 
-def print_graph_summary(campus: CampusGraph):
-    print(color("  📍 CAMPUS LOCATIONS", C.YELLOW, C.BOLD))
-    print(color("  " + "─" * 54, C.YELLOW))
-    for idx, info in campus.LOCATIONS.items():
-        tc = TYPE_COLORS.get(info["type"], C.WHITE)
-        acc = color("♿", C.GREEN) if info["accessible"] else color("✗", C.RED)
-        node_label = color(f"[{idx:02d}]", C.CYAN)
-        name_label = color(f"{info['name']:<20}", tc)
-        type_label = color(f"{info['type']:<12}", C.WHITE)
-        print(f"  {node_label} {name_label}  {type_label}  {acc}")
-    print()
-
-
-def print_result(campus: CampusGraph, agent: NavigationAgent,
-                 path: list[int] | None, algo: str,
-                 start: int, goal: int, time_limit: int):
-
-    icon, alabel, adesc = ALGO_LABELS[algo]
-    print(color(f"\n  {icon} Algorithm  : ", C.MAGENTA) + color(f"{alabel} ({adesc})", C.WHITE, C.BOLD))
-
-    if path is None or len(path) < 2:
-        print(color("  ✗ No path found!", C.RED, C.BOLD))
-        return
-
-    cost = campus.path_cost(path)
-    hops = len(path) - 1
-    est_time = cost * 2
-    nodes_exp = agent.stats.get("nodes_expanded", "?")
-
-    # Route string
-    route_parts = []
-    for i, n in enumerate(path):
-        tc = TYPE_COLORS.get(campus.node_type(n), C.WHITE)
-        label = color(campus.node_name(n), tc, C.BOLD)
-        if i == 0:
-            label = "🟢 " + label
-        elif i == len(path) - 1:
-            label = "🔴 " + label
-        route_parts.append(label)
-
-    print(color("  ─" * 28, C.CYAN))
-    print(color("  ✓ Route   : ", C.GREEN) + color(" → ", C.CYAN).join(route_parts))
-    print(color("  ✓ Cost    : ", C.GREEN) + color(f"{cost} units", C.WHITE, C.BOLD))
-    print(color("  ✓ Hops    : ", C.GREEN) + color(str(hops), C.WHITE, C.BOLD))
-    print(color("  ✓ Nodes Expanded: ", C.GREEN) + color(str(nodes_exp), C.WHITE, C.BOLD))
-    if est_time <= time_limit:
-        print(color(f"  ✓ Est. Time: ~{est_time} min ", C.GREEN) + color(f"(within {time_limit} min limit ✓)", C.LIME))
-    else:
-        print(color(f"  ✗ Est. Time: ~{est_time} min ", C.RED) + color(f"(exceeds {time_limit} min limit)", C.RED))
-
-
-def benchmark_all(campus: CampusGraph, start: int, goal: int, time_limit: int):
-    """Run all algorithms and compare their performance."""
-    agent = NavigationAgent(campus)
-    algos = ["astar", "dijkstra", "bfs", "dfs", "greedy", "ucs"]
-
-    print(color("\n  📊 ALGORITHM BENCHMARK COMPARISON", C.YELLOW, C.BOLD))
-    print(color("  " + "─" * 60, C.YELLOW))
-    print(f"  {color('Algorithm', C.CYAN):<33}"
-          f"  {color('Cost', C.CYAN):<14}"
-          f"  {color('Hops', C.CYAN):<14}"
-          f"  {color('Nodes Exp.', C.CYAN):<20}"
-          f"  {color('Time (ms)', C.CYAN)}")
-    print(color("  " + "─" * 60, C.WHITE))
-
-    results = []
-    for algo in algos:
-        t0 = time.perf_counter()
-        path = agent.find_route(start, goal, algo)
-        elapsed = (time.perf_counter() - t0) * 1000
-
-        cost = campus.path_cost(path) if path else float("inf")
-        hops = len(path) - 1 if path else 0
-        nexp = agent.stats.get("nodes_expanded", 0)
-        results.append((algo, cost, hops, nexp, elapsed, path))
-
-    # Sort by cost for display
-    results.sort(key=lambda r: r[1])
-
-    for i, (algo, cost, hops, nexp, elapsed, path) in enumerate(results):
-        icon, alabel, _ = ALGO_LABELS[algo]
-        star = color("★ BEST", C.LIME, C.BOLD) if i == 0 else ""
-        row_algo = f"{icon} {color(alabel, C.WHITE)}"
-        row_cost = color(str(cost), C.YELLOW)
-        row_hops = color(str(hops), C.BLUE)
-        row_nexp = color(str(nexp), C.MAGENTA)
-        row_ms   = color(f"{elapsed:.3f}ms", C.CYAN)
-        print(f"  {row_algo:<35}  {row_cost:<14}  {row_hops:<14}  {row_nexp:<20}  {row_ms:<12}  {star}")
-
-    print()
-    print(color("  💡 Insight: A* & Dijkstra/UCS find optimal (lowest cost) paths.", C.PINK))
-    print(color("             BFS finds fewest hops, not lowest cost.", C.PINK))
-    print(color("             Greedy is fastest but may miss optimal path.", C.PINK))
-
-
-# ─────────────────────────────────────────────
-#  🚀  MAIN DEMO
-# ─────────────────────────────────────────────
-def main():
-    print_header()
-
-    campus = CampusGraph(accessibility_mode="normal")
-    agent  = NavigationAgent(campus)
-
-    # ── Show campus layout ───────────────────
-    print_graph_summary(campus)
-
-    # ── Demo Route: Main Gate → CS Department ─
-    start, goal = 0, 7       # Main Gate → Labs
-    time_limit  = 20         # minutes
-
-    print(color("  🗺️  ROUTE PLANNING DEMO", C.CYAN, C.BOLD))
-    print(color(f"  From  : {campus.node_name(start)}", C.WHITE))
-    print(color(f"  To    : {campus.node_name(goal)}", C.WHITE))
-    print(color(f"  Limit : {time_limit} minutes", C.WHITE))
-
-    # Run all algorithms individually
-    for algo in ["astar", "dijkstra", "bfs", "dfs", "greedy", "ucs"]:
-        t0   = time.perf_counter()
-        path = agent.find_route(start, goal, algo)
-        ms   = (time.perf_counter() - t0) * 1000
-        print_result(campus, agent, path, algo, start, goal, time_limit)
-        print(color(f"  ⚡ Execution: {ms:.4f} ms\n", C.YELLOW))
-
-    # Benchmark comparison table
-    benchmark_all(campus, start, goal, time_limit)
-
-    # ── Wheelchair mode demo ─────────────────
-    print(color("\n  ♿  ACCESSIBILITY MODE: Wheelchair Friendly", C.LIME, C.BOLD))
-    print(color("  " + "─" * 50, C.LIME))
-    campus_wc = CampusGraph(accessibility_mode="wheelchair")
-    agent_wc  = NavigationAgent(campus_wc)
-    path_wc   = agent_wc.find_route(3, 9, "astar")   # Cafeteria → Parking
-    print_result(campus_wc, agent_wc, path_wc, "astar", 3, 9, 30)
-
-    print(color("\n  ✅ Campus Navigation Agent complete!\n", C.GREEN, C.BOLD))
-
-
-if __name__ == "__main__":
-    main()
